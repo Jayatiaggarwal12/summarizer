@@ -1,0 +1,9 @@
+streamlit
+langchain_groq
+pypdf2
+python-dotenv
+sentence-transformers
+faiss-cpu
+numpy
+matplotlib
+seaborn

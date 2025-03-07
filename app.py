@@ -19,6 +19,9 @@ from langchain.text_splitter import RecursiveCharacterTextSplitter
 import difflib
 import requests
 from bs4 import BeautifulSoup
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 
 # Initialize NLP resources
 nltk.download(['punkt', 'averaged_perceptron_tagger', 'vader_lexicon'])
@@ -26,6 +29,7 @@ from nltk.sentiment import SentimentIntensityAnalyzer
 
 # Load environment variables
 load_dotenv()
+SMTP_PASSWORD = os.getenv("SMTP_PASSWORD") 
 
 # Constants
 EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2"
@@ -33,6 +37,13 @@ LLM_MODEL_NAME = "llama3-70b-8192"
 CHUNK_SIZE = 1000
 CHUNK_OVERLAP = 200
 TOP_K = 3 
+
+# Email configuration
+SMTP_SERVER = os.getenv("SMTP_SERVER")
+SMTP_PORT = int(os.getenv("SMTP_PORT", 587))
+SMTP_USERNAME = os.getenv("SMTP_USERNAME")
+SMTP_PASSWORD = os.getenv("SMTP_PASSWORD")
+
 
 # Initialize session state
 def initialize_session_state():
@@ -232,6 +243,27 @@ def fetch_compliance_guidelines():
             guidelines[name] = f"Error retrieving {name} guidelines: {str(e)}"
     
     return guidelines
+def send_email(to_email, subject, content):
+    """Send email using SMTP protocol with error handling."""
+    try:
+        # Create message container
+        msg = MIMEMultipart()
+        msg['From'] = SMTP_USERNAME
+        msg['To'] = to_email
+        msg['Subject'] = subject
+
+        # Attach text content
+        msg.attach(MIMEText(content, 'plain'))
+
+        # Create SMTP connection
+        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
+            server.starttls()
+            server.login(SMTP_USERNAME, SMTP_PASSWORD)
+            server.sendmail(SMTP_USERNAME, to_email, msg.as_string())
+        
+        return "Email sent successfully"
+    except Exception as e:
+        return f"Error sending email: {str(e)}"
 
 def main():
     st.title(" Advanced Legal Document Summarizer")
@@ -294,17 +326,32 @@ def main():
                 )
                 st.markdown(st.session_state.comparison_result, unsafe_allow_html=True)
 
-        
-
-        # Document Summary
-        with st.expander(" Document Summary"):
-            st.write(st.session_state.summaries['document'])
+        # Document Summary Section
+        with st.expander("Document Summary", expanded=True):
+            if 'summaries' in st.session_state and 'document' in st.session_state.summaries:
+                summarized_text = st.session_state.summaries['document']
+            else:
+                summarized_text = "No summary available."
+            
+            st.write(summarized_text)
             st.download_button(
-                label=" Download Summary",
-                data=st.session_state.summaries['document'],
+                label="Download Summary",
+                data=summarized_text,
                 file_name="document_summary.txt",
                 mime="text/plain"
             )
+
+        # Email functionality
+        recipient_email = st.text_input("Enter recipient email:")
+        if st.button("Send via Email"):
+            if recipient_email:
+                status = send_email(recipient_email, "Legal Document Summary", summarized_text)
+                if "success" in status.lower():
+                    st.success("Email sent successfully!")
+                else:
+                    st.error(f"Failed to send email: {status}")
+            else:
+                st.warning("Please enter a valid email address.")
 
 if __name__ == "__main__":
     main()

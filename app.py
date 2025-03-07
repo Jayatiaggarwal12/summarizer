@@ -32,6 +32,7 @@ EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2"
 LLM_MODEL_NAME = "llama3-70b-8192"
 CHUNK_SIZE = 1000
 CHUNK_OVERLAP = 200
+TOP_K = 3 
 
 # Initialize session state
 def initialize_session_state():
@@ -90,6 +91,38 @@ def create_faiss_index(text_chunks: List[str]) -> Tuple[faiss.Index, np.ndarray]
     index = faiss.IndexFlatL2(dimension)
     index.add(np.array(embeddings, dtype=np.float32))
     return index, embeddings
+
+def retrieve_relevant_chunks(query: str, index: faiss.Index, text_chunks: List[str], embeddings: np.ndarray) -> List[str]:
+    """Retrieves the top K relevant document chunks from FAISS index."""
+    query_embedding = embedding_model.encode([query], convert_to_numpy=True)
+    _, indices = index.search(np.array(query_embedding, dtype=np.float32), TOP_K)
+    retrieved_chunks = [text_chunks[i] for i in indices[0]]
+    return retrieved_chunks
+
+def generate_rag_response(query: str) -> str:
+    """Retrieves relevant document chunks and generates a response using RAG."""
+    if not st.session_state.faiss_index:
+        return "No document has been processed yet."
+
+    relevant_chunks = retrieve_relevant_chunks(query, st.session_state.faiss_index, st.session_state.text_chunks, st.session_state.embeddings)
+    context = "\n\n".join(relevant_chunks)
+
+    prompt_template = PromptTemplate.from_template("""
+    Given the following legal document context, answer the user's query.
+
+    CONTEXT:
+    {context}
+
+    QUESTION:
+    {query}
+
+    RESPONSE:
+    """)
+
+    llm_chain = LLMChain(llm=llm, prompt=prompt_template)
+    response = llm_chain.run({"context": context, "query": query})
+    
+    return response
 
 def advanced_risk_assessment(text: str) -> Dict[str, float]:
     """Advanced NLP-based risk detection using multiple techniques."""
@@ -223,12 +256,13 @@ def main():
         query = st.chat_input(" Ask about the document")
         if query:
             with st.spinner(" Generating response..."):
-                response = generate_response(query)
+                response = generate_rag_response(query)
                 st.session_state.chat_history.append(("user", query))
                 st.session_state.chat_history.append(("assistant", response))
             
             for role, message in st.session_state.chat_history:
                 st.chat_message(role).write(message)
+                
         # Risk Analysis & Visualization
         with st.expander(" Risk Assessment"):
             risk_data = advanced_risk_assessment(st.session_state.full_text)

@@ -3,10 +3,12 @@ import nltk
 nltk.download(['punkt', 'punkt_tab', 'averaged_perceptron_tagger', 'vader_lexicon'])
 import streamlit as st
 import os
+import base64
 import faiss
 import numpy as np
 import fitz  # PyMuPDF
 import pandas as pd
+from fpdf import FPDF
 from io import BytesIO
 from langchain_groq import ChatGroq
 from langchain.prompts import PromptTemplate
@@ -19,9 +21,16 @@ from langchain.text_splitter import RecursiveCharacterTextSplitter
 import difflib
 import requests
 from bs4 import BeautifulSoup
-import smtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
+from sendgrid import SendGridAPIClient
+from sendgrid.helpers.mail import Mail, Attachment, FileContent, FileName, FileType, Disposition
+import base64
+
+st.set_page_config(
+    page_title="LegalDoc Analyst",
+    page_icon="⚖️",
+    layout="wide",
+    initial_sidebar_state="auto"
+)
 
 # Initialize NLP resources
 nltk.download(['punkt', 'averaged_perceptron_tagger', 'vader_lexicon'])
@@ -29,6 +38,11 @@ from nltk.sentiment import SentimentIntensityAnalyzer
 
 # Load environment variables
 load_dotenv()
+sendgrid_api_key = os.getenv("SENDGRID_API_KEY")
+sender_email = os.getenv("SENDER_EMAIL")
+
+if not sendgrid_api_key or not sender_email:
+    raise ValueError("Missing SendGrid API Key or Sender Email in environment variables.")
 
 # Constants
 EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2"
@@ -37,11 +51,7 @@ CHUNK_SIZE = 1000
 CHUNK_OVERLAP = 200
 TOP_K = 3 
 
-# Email configuration
-SMTP_SERVER = os.getenv("SMTP_SERVER")
-SMTP_PORT = int(os.getenv("SMTP_PORT", 587))
-SMTP_USERNAME = os.getenv("SMTP_USERNAME")
-SMTP_PASSWORD = os.getenv("SMTP_PASSWORD")
+
 
 # Initialize session state with proper structure
 def initialize_session_state():
@@ -215,11 +225,11 @@ def advanced_risk_assessment(text: str) -> Dict:
             risk_results["severity_counts"][config["severity"]] += count
 
         # Calculate total score
-        risk_results["total_score"] = min(100, 
+        risk_results["total_score"] = round(min(100, 
             sum([v["score"] for v in risk_results["categories"].values()]) +
             (1 - sentiment['compound']) * 25 +
             min(30, avg_sentence_length * 0.5)
-        )
+        ),)
         
         return risk_results
     except Exception as e:
@@ -329,167 +339,435 @@ def compare_documents(doc1: str, doc2: str) -> str:
         return f"Comparison failed: {str(e)}"
 
 def fetch_compliance_guidelines():
-    """Web scraper with improved error handling"""
-    sources = {
-        "GDPR": "https://gdpr-info.eu/",
-        "HIPAA": "https://www.hhs.gov/hipaa/for-professionals/index.html"
+    """Enhanced compliance checklist with structured requirements"""
+    checklists = {
+        "GDPR": {
+            "checklist": [
+                "🛡️ Lawful basis for data processing documented",
+                "📝 Clear privacy notice provided to data subjects",
+                "🔒 Data minimization practices implemented",
+                "⏱️ Right to erasure procedure established",
+                "📤 Data portability mechanism available",
+                "🕵️ Data Protection Impact Assessments conducted",
+                "📞 Designated Data Protection Officer (if required)",
+                "⚠️ 72-hour breach notification process in place"
+            ],
+            "reference": "https://gdpr-info.eu/"
+        },
+        "HIPAA": {
+            "checklist": [
+                "🏥 Patient authorization for PHI disclosure",
+                "📁 Minimum Necessary Standard implemented",
+                "🔐 Physical and technical safeguards for ePHI",
+                "📝 Notice of Privacy Practices displayed",
+                "👥 Workforce security training conducted",
+                "📅 6-year documentation retention policy",
+                "🚨 Breach notification protocol established",
+                "📊 Business Associate Agreements in place"
+            ],
+            "reference": "https://www.hhs.gov/hipaa/"
+        }
     }
-    
-    guidelines = {}
-    for name, url in sources.items():
-        try:
-            response = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=10)
-            soup = BeautifulSoup(response.text, 'html.parser')
-            
-            if name == "GDPR":
-                content = soup.find_all('article', limit=5)
-            elif name == "HIPAA":
-                content = soup.find('div', {'class': 'content'}).find_all('p', limit=5)
-            
-            guidelines[name] = "\n".join([p.get_text(strip=True) for p in content if p.get_text(strip=True)])
-        except Exception as e:
-            guidelines[name] = f"Error retrieving {name} guidelines: {str(e)}"
-    
-    return guidelines
 
-def send_email(to_email: str, subject: str, content: str) -> str:
-    """Email sending with comprehensive error handling"""
-    if not all([SMTP_SERVER, SMTP_PORT, SMTP_USERNAME, SMTP_PASSWORD]):
-        return "Email configuration incomplete"
-        
     try:
-        msg = MIMEMultipart()
-        msg['From'] = SMTP_USERNAME
-        msg['To'] = to_email
-        msg['Subject'] = subject
-        msg.attach(MIMEText(content, 'plain'))
+        # Add live updates from official sources
+        for name in checklists.keys():
+            try:
+                response = requests.get(
+                    checklists[name]["reference"],
+                    headers={'User-Agent': 'Mozilla/5.0'},
+                    timeout=5
+                )
+                soup = BeautifulSoup(response.text, 'html.parser')
+                
+                updates = []
+                if name == "GDPR":
+                    articles = soup.find_all('article', limit=3)
+                    updates = [a.get_text(strip=True) for a in articles if a.get_text(strip=True)]
+                elif name == "HIPAA":
+                    content = soup.find('div', {'class': 'content'})
+                    updates = [p.get_text(strip=True) for p in content.find_all('p', limit=3)] if content else []
+                
+                checklists[name]["latest_updates"] = updates
+            
+            except Exception as e:
+                checklists[name]["latest_updates"] = [f"⚠️ Failed to retrieve live updates: {str(e)}"]
 
-        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
-            server.starttls()
-            server.login(SMTP_USERNAME, SMTP_PASSWORD)
-            server.sendmail(SMTP_USERNAME, to_email, msg.as_string())
-        return "Email sent successfully"
+        return checklists
+
     except Exception as e:
-        return f"Email failed: {str(e)}"
+        return {"error": f"Compliance system unavailable: {str(e)}"}
+
+def generate_pdf(summary, risk_data):
+    pdf = FPDF()
+    pdf.set_auto_page_break(auto=True, margin=15)
+    pdf.add_page()
+    pdf.set_font("Arial", size=12)
+
+    pdf.cell(200, 10, "Legal Document Analysis Report", ln=True, align="C")
+    pdf.ln(10)  # Line break
+
+    pdf.multi_cell(0, 10, f"Document Summary:\n{summary}")
+    pdf.ln(5)
+
+    pdf.multi_cell(0, 10, f"Risk Score: {risk_data.get('total_score', 0)}")
+
+    # Save PDF as a string
+    pdf_data = pdf.output(dest="S").encode("latin1")  # Generate PDF as a string
+
+    # Convert to BytesIO
+    pdf_buffer = BytesIO(pdf_data)
+
+    return pdf_buffer
+
+def send_email(recipient_email, pdf_buffer):
+    sendgrid_api_key = os.getenv("SENDGRID_API_KEY")
+    sender_email = os.getenv("SENDER_EMAIL")
+
+    if not sendgrid_api_key or not sender_email:
+        st.error("⚠ Missing SendGrid API Key or Sender Email in environment variables.")
+        return False
+
+    # Read and encode PDF
+    pdf_buffer.seek(0)
+    encoded_pdf = base64.b64encode(pdf_buffer.read()).decode()
+
+    # Construct email
+    message = Mail(
+        from_email=sender_email,
+        to_emails=recipient_email,
+        subject="📄 Legal Document Report",
+        html_content="Please find the attached legal document report."
+    )
+
+    # Attach PDF
+    attachment = Attachment(
+        FileContent(encoded_pdf),
+        FileName("Legal_Report.pdf"),
+        FileType("application/pdf"),
+        Disposition("attachment")
+    )
+    message.attachment = attachment
+
+    try:
+        sg = SendGridAPIClient(sendgrid_api_key)
+        sg.send(message)
+        st.success("✅ Email sent successfully!")
+        return True
+    except Exception as e:
+        st.error(f"⚠ Email sending failed: {str(e)}")
+        return False
 
 def main():
-    st.title("📜 Legal Document Analyzer PRO")
     
+    
+    # Custom CSS styling
+    st.markdown("""
+    <style>
+        .main {background-color: #f5f7fb;}
+        .stButton>button {border-radius: 8px; padding: 0.5rem 1rem;}
+        .stDownloadButton>button {width: 100%;}
+        .stExpander .st-emotion-cache-1hynsf2 {border-radius: 10px;}
+        .metric-box {padding: 20px; border-radius: 10px; background: white; box-shadow: 0 2px 8px rgba(0,0,0,0.1);}
+        .risk-critical {color: #dc3545!important;}
+        .risk-high {color: #ff6b6b!important;}
+        .risk-medium {color: #ffd93d!important;}
+        .risk-low {color: #6c757d!important;}
+                
+    </style>
+    """, unsafe_allow_html=True)
+
+    # App Header
+    col1, col2 = st.columns([1, 3])
+    with col1:
+        st.image("https://cdn-icons-png.flaticon.com/512/2092/2092663.png", width=100)
+    with col2:
+        st.title("Legal Document Summarizer and Analyzer")
+        st.markdown("**AI-powered Contract Analysis & Risk Assessment**")
+
+    # Main Layout
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+        "📄 Document Analysis", 
+        "📊 Risk Dashboard", 
+        "🔀 Comparison", 
+        "📜 Compliance", 
+        "📧 Report"
+    ])
+
     # Document Processing Section
-    with st.expander("📂 Document Upload & Processing", expanded=True):
-        uploaded_file = st.file_uploader("Upload PDF document", type=["pdf"])
-        if uploaded_file and not st.session_state.document_processed:
-            with st.spinner("Processing document..."):
-                try:
-                    # Extract text
-                    st.session_state.full_text = extract_text_from_pdf(uploaded_file)
-                    if not st.session_state.full_text:
-                        raise ValueError("Empty document content")
-                    
-                    # Process document
-                    st.session_state.text_chunks = chunk_text(st.session_state.full_text)
-                    st.session_state.faiss_index, _ = create_faiss_index(st.session_state.text_chunks)
-                    st.session_state.summaries['document'] = generate_summary(st.session_state.full_text)
-                    st.session_state.risk_data = advanced_risk_assessment(st.session_state.full_text)
-                    st.session_state.document_processed = True
-                    st.success("Document processed successfully!")
-                except Exception as e:
-                    st.error(f"Processing failed: {str(e)}")
-                    st.session_state.document_processed = False
+    with tab1:
+        st.header("Document Processing")
+        with st.container(border=True):
+            uploaded_file = st.file_uploader("Upload Legal Document (PDF)", type=["pdf"])
+            if uploaded_file and not st.session_state.document_processed:
+                if st.button("Analyze Document", type="primary"):
+                    with st.status("Processing document...", expanded=True) as status:
+                        try:
+                            st.write("Extracting text...")
+                            st.session_state.full_text = extract_text_from_pdf(uploaded_file)
+                            
+                            st.write("Chunking text...")
+                            st.session_state.text_chunks = chunk_text(st.session_state.full_text)
+                            
+                            st.write("Creating search index...")
+                            st.session_state.faiss_index, _ = create_faiss_index(st.session_state.text_chunks)
+                            
+                            st.write("Generating summary...")
+                            st.session_state.summaries['document'] = generate_summary(st.session_state.full_text)
+                            
+                            st.write("Assessing risks...")
+                            st.session_state.risk_data = advanced_risk_assessment(st.session_state.full_text)
+                            
+                            status.update(label="Analysis Complete!", state="complete", expanded=False)
+                            st.session_state.document_processed = True
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Processing failed: {str(e)}")
+                            st.session_state.document_processed = False
 
-    if st.session_state.document_processed:
-        # Chat Interface
-        query = st.chat_input("💬 Ask about the document")
-        if query:
-            with st.spinner("Analyzing..."):
-                response = generate_rag_response(query)
-                st.session_state.chat_history.extend([
-                    ("user", query),
-                    ("assistant", response)
-                ])
-            
-            for role, msg in st.session_state.chat_history:
-                st.chat_message(role).write(msg)
-
-        # Risk Analysis Section
-        with st.expander("📊 Risk Analysis", expanded=True):
-            risk_data = st.session_state.risk_data
-            
-            # Metrics Row
-            cols = st.columns(4)
-            cols[0].metric("Total Score", f"{risk_data.get('total_score', 0)}/100")
-            cols[1].metric("Total Risks", risk_data.get('total_risks', 0))
-            cols[2].metric("Critical", risk_data['severity_counts'].get('Critical', 0))
-            cols[3].metric("High Risk", risk_data['severity_counts'].get('High', 0))
-            
-            # Visualizations
-            fig1, fig2 = visualize_risks(risk_data)
-            if fig1 and fig2:
-                st.plotly_chart(fig1, use_container_width=True)
-                st.plotly_chart(fig2, use_container_width=True)
-            
-            # Detailed Breakdown
-        with st.expander("🔍 Detailed Analysis"):
-            if risk_data.get('categories'):
-                df = pd.DataFrame.from_dict(risk_data['categories'], orient='index')
-                st.dataframe(df)
-            else:
-                st.warning("No risk data available")
-
-        # Compliance Section
-        with st.expander("📜 Compliance Guidelines"):
-            guidelines = fetch_compliance_guidelines()
-            for name, text in guidelines.items():
-                st.subheader(name)
-                st.markdown(f"""<div style='background:#f8f9fa; padding:15px; border-radius:8px'>
-                    {text}
-                </div>""", unsafe_allow_html=True)
-                st.download_button(
-                    label=f"Download {name}",
-                    data=text,
-                    file_name=f"{name}_guidelines.txt"
-                )
-
-        # Document Comparison
-        with st.expander("🔀 Compare Documents"):
-            compare_file = st.file_uploader("Upload comparison PDF", type=["pdf"])
-            if compare_file:
-                try:
-                    compare_text = extract_text_from_pdf(compare_file)
-                    comparison = compare_documents(st.session_state.full_text, compare_text)
-                    st.markdown(comparison, unsafe_allow_html=True)
-                except Exception as e:
-                    st.error(f"Comparison failed: {str(e)}")
-
-        # Summary Section
-        with st.expander("📝 Document Summary"):
-            summary = st.session_state.summaries.get('document', "No summary available")
-            st.write(summary)
-            st.download_button(
-                "Download Summary",
-                data=summary,
-                file_name="document_summary.txt"
-            )
-
-        # Email Section
-        with st.expander("📧 Email Report"):
-            email = st.text_input("Recipient Email")
-            if st.button("Send Summary"):
-                if email:
-                    result = send_email(
-                        email,
-                        "Legal Document Analysis Report",
-                        f"Document Summary:\n{summary}\n\nRisk Score: {risk_data.get('total_score', 0)}"
+        if st.session_state.document_processed:
+            with st.container(border=True):
+                st.subheader("Document Summary")
+                st.write(st.session_state.summaries.get('document', "No summary available"))
+                
+                col_d1, col_d2 = st.columns(2)
+                with col_d1:
+                    st.download_button(
+                        "Download Text Summary",
+                        data=st.session_state.summaries.get('document', ""),
+                        file_name="document_summary.txt",
+                        use_container_width=True
                     )
-                    if "success" in result.lower():
-                        st.success("Email sent!")
-                    else:
-                        st.error(result)
-                else:
-                    st.warning("Please enter an email address")
+                with col_d2:
+                    if st.button("Generate Full Report PDF", use_container_width=True):
+                        with st.spinner("Generating PDF..."):
+                            pdf_buffer = generate_pdf(
+                                st.session_state.summaries['document'],
+                                st.session_state.risk_data
+                            )
+                            st.session_state.pdf_buffer = pdf_buffer
+                            st.success("PDF ready for download!")
 
-    else:
-        st.info("⬆️ Upload a PDF document to begin analysis")
+    # Risk Dashboard
+    
+    if st.session_state.document_processed:
+        with tab2:
+            st.header("Risk Analysis Dashboard")
+            risk_data = st.session_state.risk_data
+        
+        # Risk Metrics
+            with st.container(border=True):
+                cols = st.columns(4)
+                metric_style = """
+                    <style>
+                        .metric-box {
+                            padding: 20px;
+                            border-radius: 10px;
+                            background: white;
+                            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+                            height: 150px;
+                            display: flex;
+                            flex-direction: column;
+                            justify-content: center;
+                        }
+                        .metric-title {
+                            font-size: 1.1rem;
+                            margin-bottom: 8px;
+                            font-weight: 600;
+                            color: #666;
+                        }
+                        .metric-value {
+                            font-size: 2.5rem;
+                            font-weight: 700;
+                            line-height: 1.2;
+                            color: #dc3545 !important;
+                        }
+                        .metric-subtext {
+                            font-size: 1rem;
+                            color: #666;
+                        }
+                        .risk-critical { color: #dc3545; }
+                        .risk-high { color: #ff6b6b; }
+                    </style>
+                """
+                st.markdown(metric_style, unsafe_allow_html=True)
+
+            # Overall Risk Score
+            with cols[0]:
+                st.markdown(f'''
+                    <div class="metric-box">
+                        <div class="metric-title risk-critical">Overall Risk Score</div>
+                        <div class="metric-value risk-critical">
+                            {risk_data.get("total_score", 0)}
+                            <span class="metric-subtext">/100</span>
+                        </div>
+                    </div>
+                ''', unsafe_allow_html=True)
+
+            # Total Risks
+            with cols[1]:
+                st.markdown(f'''
+                    <div class="metric-box">
+                        <div class="metric-title">Total Risks</div>
+                        <div class="metric-value">
+                            {risk_data.get("total_risks", 0)}
+                        </div>
+                    </div>
+                ''', unsafe_allow_html=True)
+
+            # Critical Risks
+            with cols[2]:
+                st.markdown(f'''
+                    <div class="metric-box">
+                        <div class="metric-title risk-critical">Critical Risks</div>
+                        <div class="metric-value risk-critical">
+                            {risk_data["severity_counts"].get("Critical", 0)}
+                        </div>
+                    </div>
+                ''', unsafe_allow_html=True)
+
+            # High Risks
+            with cols[3]:
+                st.markdown(f'''
+                    <div class="metric-box">
+                        <div class="metric-title risk-high">High Risks</div>
+                        <div class="metric-value risk-high">
+                            {risk_data["severity_counts"].get("High", 0)}
+                        </div>
+                    </div>
+                ''', unsafe_allow_html=True)
+
+        # Rest of the dashboard...
+
+            # Visualizations
+            with st.container(border=True):
+                fig1, fig2 = visualize_risks(risk_data)
+                if fig1 and fig2:
+                    col_v1, col_v2 = st.columns(2)
+                    with col_v1:
+                        st.plotly_chart(fig1, use_container_width=True)
+                    with col_v2:
+                        st.plotly_chart(fig2, use_container_width=True)
+
+            # Detailed Risk Breakdown
+            with st.container(border=True):
+                st.subheader("Risk Category Breakdown")
+                if risk_data.get('categories'):
+                    df = pd.DataFrame.from_dict(risk_data['categories'], orient='index')
+                    st.dataframe(
+                        df,
+                        column_config={
+                            "score": st.column_config.ProgressColumn(
+                                "Score",
+                                help="Risk score (0-40)",
+                                format="%f",
+                                min_value=0,
+                                max_value=40,
+                            )
+                        },
+                        use_container_width=True
+                    )
+
+    # Document Comparison
+    with tab3:
+        st.header("Document Comparison")
+        if st.session_state.document_processed:
+            with st.container(border=True):
+                compare_file = st.file_uploader("Upload Comparison Document", type=["pdf"])
+                if compare_file:
+                    try:
+                        compare_text = extract_text_from_pdf(compare_file)
+                        comparison = compare_documents(st.session_state.full_text, compare_text)
+                        st.markdown(
+                            f'<div style="border:1px solid #eee; padding:20px; border-radius:8px">'
+                            f'{comparison}</div>',
+                            unsafe_allow_html=True
+                        )
+                    except Exception as e:
+                        st.error(f"Comparison failed: {str(e)}")
+
+    # Compliance Section
+    with tab4:
+        st.header("Compliance Checklists")
+        guidelines = fetch_compliance_guidelines()
+    
+        if isinstance(guidelines, dict) and "error" not in guidelines:
+            for regulation, data in guidelines.items():
+                with st.expander(f"🔍 {regulation} Compliance Checklist"):
+                    col1, col2 = st.columns([3, 1])
+                    with col1:
+                        st.subheader(f"{regulation} Requirements")
+                        for item in data.get("checklist", []):
+                            st.markdown(f"- {item}")
+                    
+                    with col2:
+                        st.download_button(
+                            label=f"Download {regulation} Checklist",
+                            data="\n".join(data.get("checklist", [])),
+                            file_name=f"{regulation}_checklist.txt",
+                            use_container_width=True
+                        )
+                
+                    if data.get("latest_updates"):
+                        st.markdown("---")
+                        st.caption(f"**Latest {regulation} Updates**")
+                        for update in data["latest_updates"][:3]:
+                            st.markdown(f"📢 {update}")
+        else:
+            st.error("Failed to load compliance guidelines")
+
+    # Report Section
+    with tab5:
+        st.header("Report Generation")
+        if st.session_state.document_processed:
+            with st.container(border=True):
+                st.subheader("Email Report")
+                email = st.text_input("Recipient Email Address", placeholder="legal@company.com")
+                
+                col_e1, col_e2 = st.columns(2)
+                with col_e1:
+                    if st.button("📧 Send Email Report", use_container_width=True):
+                        if email and hasattr(st.session_state, 'pdf_buffer'):
+                            if send_email(email, st.session_state.pdf_buffer):
+                                st.success("Report sent successfully!")
+                            else:
+                                st.error("Failed to send email")
+                        else:
+                            st.warning("Please generate PDF first and enter valid email")
+                
+                with col_e2:
+                    if hasattr(st.session_state, 'pdf_buffer'):
+                        st.download_button(
+                            label="⬇️ Download Full Report",
+                            data=st.session_state.pdf_buffer,
+                            file_name="Legal_Analysis_Report.pdf",
+                            mime="application/pdf",
+                            use_container_width=True
+                        )
+
+    # Chat Interface (Floating in Sidebar)
+    if st.session_state.document_processed:
+        with st.sidebar:
+            st.header("Document Q&A")
+            for role, msg in st.session_state.chat_history[-3:]:
+                with st.chat_message(role):
+                    st.write(msg)
+            
+            if query := st.chat_input("Ask about the document..."):
+                with st.spinner("Analyzing..."):
+                    response = generate_rag_response(query)
+                    st.session_state.chat_history.extend([
+                        ("user", query),
+                        ("assistant", response)
+                    ])
+                    st.rerun()
+            # License Footer
+            st.markdown("---")
+            st.caption("""
+                © 2025 VidzAI - All Rights Reserved  
+                This software is proprietary and confidential  
+                Unauthorized use or distribution prohibited
+            """)        
 
 if __name__ == "__main__":
     main()

@@ -1,4 +1,4 @@
-# 📄 AI-Driven Legal Document Analysis System
+# 📄 Advanced AI-Driven Legal Document Summarization and Risk Assessment
 An advanced AI-powered solution designed to analyze, summarize, and assess risks in legal documents efficiently. It leverages state-of-the-art NLP techniques and specialized legal analysis to assist professionals in making informed decisions faster.
 
 ---

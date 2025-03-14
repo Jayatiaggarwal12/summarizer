@@ -1,66 +1,111 @@
-from nltk.sentiment import SentimentIntensityAnalyzer
 import nltk
 from typing import Dict
-import re
+import streamlit as st
+import plotly.express as px
+import pandas as pd
 
-class RiskAnalyzer:
-    def __init__(self):
-        nltk.download(['vader_lexicon', 'punkt'])
-        self.sia = SentimentIntensityAnalyzer()
-        
-        self.risk_framework = {
-            "Data Protection": {
-                "patterns": [r"\b(data breach|unauthorized access)\b"],
-                "severity": "High",
-                "weight": 1.8
-            },
-            "Compliance Risk": {
-                "patterns": [r"\b(non-compliance|violation|penalty)\b"],
-                "severity": "Medium",
-                "weight": 1.5
-            },
-            "Operational Risk": {
-                "patterns": [r"\b(downtime|system failure)\b"],
-                "severity": "Medium",
-                "weight": 1.2
-            }
+from utils import load_sentiment_analyzer
+
+sia = load_sentiment_analyzer()
+
+def advanced_risk_assessment(text: str) -> Dict:
+    """Enhanced risk assessment with proper error handling"""
+    if not text:
+        return {
+            'categories': {},
+            'total_risks': 0,
+            'severity_counts': {"Low": 0, "Medium": 0, "High": 0, "Critical": 0},
+            'total_score': 0
         }
 
-    def analyze_risks(self, text: str) -> Dict:
-        """Comprehensive risk analysis with multiple dimensions"""
-        results = {
+    risk_categories = {
+        "Compliance": {
+            "keywords": ["regulation", "legal", "gdpr", "hipaa", "violation"],
+            "weight": 1.8,
+            "severity": "High"
+        },
+        "Financial": {
+            "keywords": ["penalty", "fine", "liability", "indemnity"],
+            "weight": 2.2,
+            "severity": "Critical"
+        },
+        "Operational": {
+            "keywords": ["termination", "breach", "default", "force majeure"],
+            "weight": 1.5,
+            "severity": "Medium"
+        }
+    }
+
+    try:
+        sentiment = sia.polarity_scores(text)
+        sentences = nltk.sent_tokenize(text)
+        avg_sentence_length = sum(len(nltk.word_tokenize(s)) for s in sentences) / len(sentences) if sentences else 0
+
+        risk_results = {
             "categories": {},
-            "sentiment": self.sia.polarity_scores(text),
-            "complexity": self._calculate_complexity(text),
+            "total_risks": 0,
+            "severity_counts": {"Low": 0, "Medium": 0, "High": 0, "Critical": 0},
             "total_score": 0
         }
 
-        # Pattern-based analysis
-        category_scores = {}
-        for category, config in self.risk_framework.items():
-            count = sum(len(re.findall(pattern, text, re.IGNORECASE)) 
-                      for pattern in config["patterns"])
-            score = count * config["weight"]
-            category_scores[category] = {
+        for category, config in risk_categories.items():
+            count = sum(text.lower().count(keyword) for keyword in config["keywords"])
+            weighted_score = min(40, count * config["weight"])
+
+            risk_results["categories"][category] = {
+                "score": weighted_score,
                 "count": count,
-                "score": score,
                 "severity": config["severity"]
             }
-            results["total_score"] += score
+            risk_results["total_risks"] += count
+            risk_results["severity_counts"][config["severity"]] += count
 
-        # Add NLP-based scores
-        results["total_score"] += (1 - results["sentiment"]["compound"]) * 20
-        results["total_score"] = min(100, results["total_score"])
-        
-        results["categories"] = category_scores
-        return results
+        # Calculate total score
+        risk_results["total_score"] = round(min(100,
+                                                  sum([v["score"] for v in risk_results["categories"].values()]) +
+                                                  (1 - sentiment['compound']) * 25 +
+                                                  min(30, avg_sentence_length * 0.5)
+                                                  ), )
 
-    def _calculate_complexity(self, text: str) -> Dict:
-        """Calculate document complexity metrics"""
-        sentences = nltk.sent_tokenize(text)
-        words = nltk.word_tokenize(text)
+        return risk_results
+    except Exception as e:
+        st.error(f"Risk assessment failed: {str(e)}")
         return {
-            "avg_sentence_length": len(words)/len(sentences) if sentences else 0,
-            "unique_words": len(set(words))/len(words) if words else 0,
-            "readability_score": len(text)/(len(sentences) + 1)  # Simplified metric
+            'categories': {},
+            'total_risks': 0,
+            'severity_counts': {"Low": 0, "Medium": 0, "High": 0, "Critical": 0},
+            'total_score': 0
         }
+
+def visualize_risks(risk_data):
+    """Safe visualization generation with error handling"""
+    if not risk_data or not risk_data.get('categories'):
+        return None, None
+
+    try:
+        # Severity distribution pie chart
+        fig1 = px.pie(
+            names=list(risk_data["severity_counts"].keys()),
+            values=list(risk_data["severity_counts"].values()),
+            title="Risk Severity Distribution",
+            hole=0.3
+        )
+
+        # Category scores bar chart
+        categories = list(risk_data["categories"].keys())
+        scores = [v.get("score", 0) for v in risk_data["categories"].values()]
+        counts = [v.get("count", 0) for v in risk_data["categories"].values()]
+
+        fig2 = px.bar(
+            x=categories,
+            y=scores,
+            text=counts,
+            title="Risk Scores by Category",
+            labels={"x": "Category", "y": "Risk Score"},
+            color=categories
+        )
+
+        return fig1, fig2
+    except Exception as e:
+        st.error(f"Visualization error: {str(e)}")
+        return None, None
